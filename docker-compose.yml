@@ -1,3 +1,6 @@
+volumes:
+  sockets:
+
 services:
   nginx:
     image: nginx:alpine
@@ -5,6 +8,7 @@ services:
       - "9999:9999"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - sockets:/sockets:rw
     depends_on:
       - api-1
       - api-2
@@ -18,11 +22,12 @@ services:
 
   api-1:
     hostname: api-1
-    image: paulohrpinheiro/rinha-api-v:v02
+    image: paulohrpinheiro/rinha-api-v:v03
     environment:
-      - PORT=8080
+      - SOCKET_PATH=/sockets/api-1.sock
       - RESOURCES_DIR=/resources
-      - HOSTNAME=api-1
+    volumes:
+      - sockets:/sockets:rw
     networks:
       - rinha-net
     deploy:
@@ -33,11 +38,12 @@ services:
 
   api-2:
     hostname: api-2
-    image: paulohrpinheiro/rinha-api-v:v02
+    image: paulohrpinheiro/rinha-api-v:v03
     environment:
-      - PORT=8080
+      - SOCKET_PATH=/sockets/api-2.sock
       - RESOURCES_DIR=/resources
-      - HOSTNAME=api-2
+    volumes:
+      - sockets:/sockets:rw
     networks:
       - rinha-net
     deploy:
