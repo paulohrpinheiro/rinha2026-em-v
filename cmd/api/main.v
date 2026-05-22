@@ -1,7 +1,7 @@
 module main
 
 import internal
-import net
+import net.unix
 import os
 import time
 import json
@@ -54,11 +54,7 @@ fn main() {
 
 	mut socket_path := os.getenv('SOCKET_PATH')
 	if socket_path == '' { socket_path = '/run/sock/api.sock' }
-	// Remove socket file residual de execuções anteriores
-	os.rm(socket_path) or {}
-	mut listener := net.listen_tcp(.unix, socket_path)!
-	// Permissões amplas para nginx (container diferente) conectar
-	os.chmod(socket_path, int(0o777)) or {}
+	mut listener := unix.listen_stream(socket_path)!
 	println('API ready on ${socket_path}')
 
 	for {
@@ -67,7 +63,7 @@ fn main() {
 	}
 }
 
-fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.DebugCounters, prebuilt PrebuiltResponses) {
+fn handle_conn(mut conn unix.StreamConn, mut handler internal.Handler, dc &internal.DebugCounters, prebuilt PrebuiltResponses) {
 	defer { conn.close() or {} }
 	mut buf := []u8{len: 4096}
 	mut req_count := 0
