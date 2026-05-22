@@ -23,9 +23,9 @@ fn main() {
 	mut times := []f64{cap: 1000}
 	for i in 0 .. 1000 {
 		sw := time.new_stopwatch()
-		resp := handler.handle_fraud_score(test_body)
+		_, ok := handler.handle_fraud_score(test_body)
 		us := f64(sw.elapsed().microseconds())
-		if resp.len == 0 { println('ERROR: empty response at ${i}') }
+		if !ok { println('ERROR: empty response at ${i}') }
 		times << us
 	}
 

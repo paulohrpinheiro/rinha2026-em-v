@@ -39,13 +39,13 @@ pub fn new_handler(idx &IVFIndex, cfg &NormalizationConfig, dc &DebugCounters, s
 	unsafe { return &Handler{index: idx, config: cfg, debug: dc, sem: sem} }
 }
 
-pub fn (mut h Handler) handle_fraud_score(body []u8) []u8 {
-	if !h.sem.try_acquire() { unsafe { h.debug.semaphore_503s++ }; return []u8{} }
+pub fn (mut h Handler) handle_fraud_score(body []u8) (int, bool) {
+	if !h.sem.try_acquire() { unsafe { h.debug.semaphore_503s++ }; return 0, false }
 	defer { h.sem.release() }
 	unsafe { h.debug.requests_received++ }
-	payload := parse_payload(body, h.config) or { unsafe { h.debug.parse_errors++ }; return []u8{} }
+	payload := parse_payload(body, h.config) or { unsafe { h.debug.parse_errors++ }; return 0, false }
 	vector := normalize(&payload, h.config)
 	fraud_count, _ := h.index.search(&vector)
 	unsafe { h.debug.responses_sent++ }
-	return fraud_response(fraud_count)
+	return fraud_count, true
 }

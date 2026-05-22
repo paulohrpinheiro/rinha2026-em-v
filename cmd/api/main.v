@@ -6,6 +6,30 @@ import os
 import time
 import json
 
+struct PrebuiltResponses {
+mut:
+	fraud_score [6][]u8
+	ready       []u8
+	resp_503    []u8
+	resp_400    []u8
+}
+
+fn build_prebuilt() PrebuiltResponses {
+	mut r := PrebuiltResponses{}
+	for i in 0 .. 6 {
+		body := internal.fraud_response(i)
+		header := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.len}\r\nConnection: keep-alive\r\n\r\n'
+		mut resp := []u8{cap: header.len + body.len}
+		resp << header.bytes()
+		resp << body
+		r.fraud_score[i] = resp
+	}
+	r.ready = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\n{"status":"ok"}'.bytes()
+	r.resp_503 = 'HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n'.bytes()
+	r.resp_400 = 'HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'.bytes()
+	return r
+}
+
 fn main() {
 	args := os.args
 	if args.len >= 3 && args[1] == '-build-index' {
@@ -26,20 +50,24 @@ fn main() {
 		handler.handle_fraud_score(warmup_payload.bytes())
 	}
 
-	mut port := os.getenv('PORT')
-	if port == '' { port = '8080' }
-	mut listener := net.listen_tcp(.ip6, '[::]:${port}') or {
-		net.listen_tcp(.ip, '0.0.0.0:${port}')!
-	}
-	println('API ready on :${port}')
+	prebuilt := build_prebuilt()
+
+	mut socket_path := os.getenv('SOCKET_PATH')
+	if socket_path == '' { socket_path = '/run/sock/api.sock' }
+	// Remove socket file residual de execuções anteriores
+	os.rm(socket_path) or {}
+	mut listener := net.listen_tcp(.unix, socket_path)!
+	// Permissões amplas para nginx (container diferente) conectar
+	os.chmod(socket_path, int(0o777)) or {}
+	println('API ready on ${socket_path}')
 
 	for {
 		mut conn := listener.accept()!
-		spawn handle_conn(mut conn, mut handler, dc)
+		spawn handle_conn(mut conn, mut handler, dc, prebuilt)
 	}
 }
 
-fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.DebugCounters) {
+fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.DebugCounters, prebuilt PrebuiltResponses) {
 	defer { conn.close() or {} }
 	mut buf := []u8{len: 4096}
 	mut req_count := 0
@@ -49,25 +77,29 @@ fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.
 		if n == 0 { break }
 		body := unsafe { buf[..n] }
 		req_count++
+		body_str := body.bytestr()
 
-		if body.bytestr().starts_with('GET /ready') {
-			conn.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\n{"status":"ok"}'.bytes()) or { break }
-		} else if body.bytestr().starts_with('GET /debug/vars') {
-			snap := dc.snapshot()
-			resp := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${snap.len}\r\nConnection: keep-alive\r\n\r\n${snap}'
-			conn.write(resp.bytes()) or { break }
-		} else if body.bytestr().starts_with('POST /fraud-score') {
-			header_end := body.bytestr().index('\r\n\r\n') or { body.len - 1 }
+		if body_str.starts_with('GET /ready') {
+			conn.write(prebuilt.ready) or { break }
+		} else if body_str.starts_with('GET /debug/vars') {
+			snap_str := dc.snapshot()
+			snap := snap_str.bytes()
+			header := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${snap.len}\r\nConnection: keep-alive\r\n\r\n'
+			mut resp := []u8{cap: header.len + snap.len}
+			resp << header.bytes()
+			resp << snap
+			conn.write(resp) or { break }
+		} else if body_str.starts_with('POST /fraud-score') {
+			header_end := body_str.index('\r\n\r\n') or { body.len - 1 }
 			json_body := body[header_end + 4..]
-			response := handler.handle_fraud_score(json_body)
-			if response.len == 0 {
-				conn.write('HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n'.bytes()) or { break }
+			fraud_count, ok := handler.handle_fraud_score(json_body)
+			if !ok {
+				conn.write(prebuilt.resp_503) or { break }
 			} else {
-				resp := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${response.len}\r\nConnection: keep-alive\r\n\r\n${response.bytestr()}'
-				conn.write(resp.bytes()) or { break }
+				conn.write(prebuilt.fraud_score[fraud_count]) or { break }
 			}
 		} else {
-			conn.write('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'.bytes()) or { break }
+			conn.write(prebuilt.resp_400) or { break }
 			break
 		}
 	}
