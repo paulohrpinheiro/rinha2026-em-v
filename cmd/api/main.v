@@ -3,6 +3,7 @@ module main
 import internal
 import net
 import os
+import time
 import json
 
 fn main() {
@@ -41,24 +42,33 @@ fn main() {
 fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.DebugCounters) {
 	defer { conn.close() or {} }
 	mut buf := []u8{len: 4096}
-	n := conn.read(mut buf) or { return }
-	body := unsafe { buf[..n] }
+	mut req_count := 0
+	for req_count < 256 {
+		conn.set_read_timeout(50 * time.millisecond)
+		n := conn.read(mut buf) or { break }
+		if n == 0 { break }
+		body := unsafe { buf[..n] }
+		req_count++
 
-	if body.bytestr().starts_with('GET /ready') {
-		conn.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\n{"status":"ok"}'.bytes()) or {}
-	} else if body.bytestr().starts_with('GET /debug/vars') {
-		snap := dc.snapshot()
-		resp := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${snap.len}\r\nConnection: keep-alive\r\n\r\n${snap}'
-		conn.write(resp.bytes()) or {}
-	} else if body.bytestr().starts_with('POST /fraud-score') {
-		header_end := body.bytestr().index('\r\n\r\n') or { body.len - 1 }
-		json_body := body[header_end + 4..]
-		response := handler.handle_fraud_score(json_body)
-		if response.len == 0 {
-			conn.write('HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n'.bytes()) or {}
+		if body.bytestr().starts_with('GET /ready') {
+			conn.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: keep-alive\r\n\r\n{"status":"ok"}'.bytes()) or { break }
+		} else if body.bytestr().starts_with('GET /debug/vars') {
+			snap := dc.snapshot()
+			resp := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${snap.len}\r\nConnection: keep-alive\r\n\r\n${snap}'
+			conn.write(resp.bytes()) or { break }
+		} else if body.bytestr().starts_with('POST /fraud-score') {
+			header_end := body.bytestr().index('\r\n\r\n') or { body.len - 1 }
+			json_body := body[header_end + 4..]
+			response := handler.handle_fraud_score(json_body)
+			if response.len == 0 {
+				conn.write('HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n'.bytes()) or { break }
+			} else {
+				resp := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${response.len}\r\nConnection: keep-alive\r\n\r\n${response.bytestr()}'
+				conn.write(resp.bytes()) or { break }
+			}
 		} else {
-			resp := 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${response.len}\r\nConnection: keep-alive\r\n\r\n${response.bytestr()}'
-			conn.write(resp.bytes()) or {}
+			conn.write('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'.bytes()) or { break }
+			break
 		}
 	}
 }
