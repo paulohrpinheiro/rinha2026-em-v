@@ -11,7 +11,9 @@ import time
 struct Parser {
 	body []u8
 mut:
-	pos int
+	pos                int
+	merchant_id_start  int
+	merchant_id_len    int
 }
 
 fn new_parser(body []u8) Parser { return Parser{body: body, pos: 0} }
@@ -82,11 +84,56 @@ fn (mut p Parser) num_int() int { p.skip_ws(); mut r := 0; mut neg := false; if 
 fn (mut p Parser) bool_val() bool { p.skip_ws(); if p.pos + 4 <= p.body.len && p.body[p.pos] == `t` { p.pos += 4; return true }; p.pos += 5; return false }
 fn (mut p Parser) ts_iso() !time.Time { p.skip_ws(); if p.pos < p.body.len && p.body[p.pos] == `"` { p.pos++ }; start := p.pos; for p.pos < p.body.len && p.body[p.pos] != `"` && p.body[p.pos] != ` ` && p.body[p.pos] != `}` { p.pos++ }; end := p.pos; if p.pos < p.body.len && p.body[p.pos] == `"` { p.pos++ }; return time.parse_rfc3339(p.body[start..end].bytestr())! }
 
+// ── Helpers para capturar strings ────────────────────────────────────────
+
+fn (mut p Parser) parse_mcc(mut pl PayloadData) {
+	p.skip_ws()
+	if p.pos < p.body.len && p.body[p.pos] == `"` { p.pos++ }
+	for i in 0 .. 4 {
+		if p.pos < p.body.len && p.body[p.pos] != `"` {
+			pl.mcc_code[i] = p.body[p.pos]
+			p.pos++
+		}
+	}
+	// skip restante da string (caso MCC tenha mais de 4 chars)
+	for p.pos < p.body.len && p.body[p.pos] != `"` { p.pos++ }
+	if p.pos < p.body.len && p.body[p.pos] == `"` { p.pos++ }
+}
+
+fn (mut p Parser) parse_string_to() (int, int) {
+	p.skip_ws()
+	if p.pos < p.body.len && p.body[p.pos] == `"` { p.pos++ }
+	start := p.pos
+	for p.pos < p.body.len && p.body[p.pos] != `"` { p.pos++ }
+	length := p.pos - start
+	if p.pos < p.body.len && p.body[p.pos] == `"` { p.pos++ }
+	return start, length
+}
+
+fn (mut p Parser) parse_string_array(mut arr []string) {
+	p.skip_ws()
+	if p.pos >= p.body.len || p.body[p.pos] != `[` { return }
+	p.pos++ // skip '['
+	for p.pos < p.body.len {
+		p.skip_ws()
+		if p.pos >= p.body.len { break }
+		if p.body[p.pos] == `]` { p.pos++; break }
+		if p.body[p.pos] == `,` { p.pos++; continue }
+		sstart, slen := p.parse_string_to()
+		if slen > 0 {
+			arr << p.body[sstart..sstart + slen].bytestr()
+		}
+	}
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 
-pub fn parse_payload(body []u8) !PayloadData {
+pub fn parse_payload(body []u8, config &NormalizationConfig) !PayloadData {
 	mut p := new_parser(body)
 	mut pl := PayloadData{}
+	// known_merchants será preenchido se existir no JSON
+	mut known_merchants := []string{}
+
 	p.expect(`{`)!
 	mut ft := false; mut fc := false; mut fm := false; mut ft2 := false
 	for p.pos < p.body.len {
@@ -97,12 +144,31 @@ pub fn parse_payload(body []u8) !PayloadData {
 		match kl {
 			11 { if p.is_key(ks, 'transaction') { p.tx(mut pl)!; ft = true } else { p.skip_any() } }
 			16 { if p.is_key(ks, 'last_transaction') { p.last_tx(mut pl)! } else { p.skip_any() } }
-			8 { if p.is_key(ks, 'customer') { p.cust(mut pl)!; fc = true } else if p.is_key(ks, 'merchant') { p.merc(mut pl)!; fm = true } else if p.is_key(ks, 'terminal') { p.term(mut pl)!; ft2 = true } else { p.skip_any() } }
+			8 {
+				if p.is_key(ks, 'customer') { p.cust(mut pl, mut known_merchants)!; fc = true }
+				else if p.is_key(ks, 'merchant') { p.merc(mut pl)!; fm = true }
+				else if p.is_key(ks, 'terminal') { p.term(mut pl)!; ft2 = true }
+				else { p.skip_any() }
+			}
 			else { p.skip_any() }
 		}
 		p.skip_comma()
 	}
 	if !ft || !fc || !fm || !ft2 { return error('missing required fields') }
+
+	// Resolve mcc_risk
+	pl.mcc_risk = config.mcc_risk[pl.mcc_code[..].bytestr()] or { 0.0 }
+
+	// Resolve merchant_is_unknown: true se merchant.id NÃO está em known_merchants
+	if p.merchant_id_len > 0 {
+		merchant_id := p.body[p.merchant_id_start..p.merchant_id_start + p.merchant_id_len].bytestr()
+		mut found := false
+		for km in known_merchants {
+			if km == merchant_id { found = true; break }
+		}
+		pl.merchant_is_unknown = !found
+	}
+
 	return pl
 }
 
@@ -123,14 +189,14 @@ fn (mut p Parser) tx(mut pl PayloadData) ! {
 	}
 }
 
-fn (mut p Parser) cust(mut pl PayloadData) ! {
+fn (mut p Parser) cust(mut pl PayloadData, mut known_merchants []string) ! {
 	p.expect(`{`)!
 	for p.pos < p.body.len { p.skip_ws(); if p.pos >= p.body.len { break }; if p.body[p.pos] == `}` { p.pos++; break }
 		ks := p.pos + 1; kl := p.key()!; p.skip_ws()
 		match kl {
 			10 { if p.is_key(ks, 'avg_amount') { pl.avg_amount = p.num_f64() } else { p.skip_any() } }
 			12 { if p.is_key(ks, 'tx_count_24h') { pl.tx_count_24h = p.num_int() } else { p.skip_any() } }
-			15 { if p.is_key(ks, 'known_merchants') { p.skip_any() } else { p.skip_any() } }
+			15 { if p.is_key(ks, 'known_merchants') { p.parse_string_array(mut known_merchants) } else { p.skip_any() } }
 			else { p.skip_any() }
 		}
 		p.skip_comma()
@@ -142,8 +208,8 @@ fn (mut p Parser) merc(mut pl PayloadData) ! {
 	for p.pos < p.body.len { p.skip_ws(); if p.pos >= p.body.len { break }; if p.body[p.pos] == `}` { p.pos++; break }
 		ks := p.pos + 1; kl := p.key()!; p.skip_ws()
 		match kl {
-			2 { if p.is_key(ks, 'id') { p.skip_any() } else { p.skip_any() } }
-			3 { if p.is_key(ks, 'mcc') { p.skip_any() } else { p.skip_any() } }
+			2 { if p.is_key(ks, 'id') { p.merchant_id_start, p.merchant_id_len = p.parse_string_to() } else { p.skip_any() } }
+			3 { if p.is_key(ks, 'mcc') { p.parse_mcc(mut pl) } else { p.skip_any() } }
 			10 { if p.is_key(ks, 'avg_amount') { pl.merchant_avg_amount = p.num_f64() } else { p.skip_any() } }
 			else { p.skip_any() }
 		}

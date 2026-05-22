@@ -68,6 +68,7 @@ pub mut:
 	is_online            bool
 	card_present         bool
 	merchant_is_unknown  bool
+	mcc_code             [4]u8
 	mcc_risk             f64
 	merchant_avg_amount  f64
 }
