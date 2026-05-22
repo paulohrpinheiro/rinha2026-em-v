@@ -1,4 +1,4 @@
-# Stage 1: Build + gerar índice
+# Stage 1: Build (Alpine/musl para binário estático)
 FROM thevlang/vlang:alpine AS builder
 RUN apk add --no-cache ca-certificates
 WORKDIR /src
@@ -7,11 +7,8 @@ COPY internal/ ./internal/
 COPY cmd/ ./cmd/
 COPY resources/ /resources/
 
-# Compila a API
-RUN v -prod -autofree -skip-unused -o /api cmd/api/main.v
-
-# Gera o índice IVF pré-construído
-RUN RESOURCES_DIR=/resources REFERENCES_PATH=/resources/references.json.gz /api -build-index /resources/index.bin
+# Compila estaticamente contra musl (compatível com scratch)
+RUN v -prod -skip-unused -cflags '-static' -o /api cmd/api/main.v
 
 # Stage 2: Runtime
 FROM scratch

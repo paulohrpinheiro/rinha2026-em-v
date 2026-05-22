@@ -14,12 +14,12 @@ fn main() {
 
 	mut dir := os.getenv('RESOURCES_DIR')
 	if dir == '' { dir = './resources' }
-	config := load_config(dir)!
+	mut config := load_config(dir)!
 	idx := load_index(dir)!
 
 	dc := &internal.DebugCounters{}
 	sem := internal.new_semaphore(1024)
-	mut handler := internal.new_handler(idx, config, dc, sem)
+	mut handler := internal.new_handler(idx, &config, dc, sem)
 
 	for _ in 0 .. 48 {
 		handler.handle_fraud_score(warmup_payload.bytes())
@@ -42,7 +42,7 @@ fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.
 	defer { conn.close() or {} }
 	mut buf := []u8{len: 4096}
 	n := conn.read(mut buf) or { return }
-	body := buf[..n]
+	body := unsafe { buf[..n] }
 
 	if body.bytestr().starts_with('GET /ready') {
 		conn.write('HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{"status":"ok"}'.bytes()) or {}
@@ -75,12 +75,12 @@ fn build_index(output_path string) ! {
 	println('Done.')
 }
 
-fn load_config(dir string) !&internal.NormalizationConfig {
+fn load_config(dir string) !internal.NormalizationConfig {
 	norm_data := os.read_bytes('${dir}/normalization.json')!
 	norm := json.decode(internal.NormalizationConfig, norm_data.bytestr())!
 	mcc_data := os.read_bytes('${dir}/mcc_risk.json')!
 	mcc := json.decode(map[string]f64, mcc_data.bytestr())!
-	return &internal.NormalizationConfig{
+	return internal.NormalizationConfig{
 		max_amount: norm.max_amount, max_installments: norm.max_installments,
 		amount_vs_avg_ratio: norm.amount_vs_avg_ratio, max_minutes: norm.max_minutes,
 		max_km: norm.max_km, max_tx_count_24h: norm.max_tx_count_24h,

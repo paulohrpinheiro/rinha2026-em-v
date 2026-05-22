@@ -2,7 +2,7 @@
 .PHONY: build test bench docker-build docker-push docker-up docker-down clean all perf-stat
 
 BINARY_API := bin/api
-VFLAGS     := -prod -autofree -skip-unused
+VFLAGS     := -prod -skip-unused
 IMAGE      := paulohrpinheiro/rinha-api-v
 VERSION    ?= v1
 

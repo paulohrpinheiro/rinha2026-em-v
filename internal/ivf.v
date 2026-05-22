@@ -71,89 +71,144 @@ dist i32 }
 struct Neighbor { dist i32
 label u8 }
 
-pub fn build_ivf(vectors []Vector14, labels []u8, nc int, ni int) !&IVFIndex {
+// build_ivf constrói um IVF index usando mini-batch K-means.
+// Estratégia (portada da versão Go v44):
+//   - K-means++ nos primeiros 100 centroides usando amostra de 5%
+//   - Centroides restantes via amostragem uniforme espaçada
+//   - 25 iterações de mini-batch (20% do dataset cada)
+//   - Assign final no dataset completo + reordenação por cluster
+pub fn build_ivf(vectors []Vector14, labels []u8, nc int, _ int) !&IVFIndex {
 	if vectors.len == 0 { return error('no vectors') }
 	if nc < 1 { return error('need at least 1 cluster') }
 	n := vectors.len
-	mut centroids := kmeans_pp(vectors, nc)!
-	for _ in 0 .. ni {
-		mut assigns := []int{len: n, init: 0}
-		for i in 0 .. n {
-			mut bd := i32(i32(2147483647))
-			mut bc := 0
-			for c in 0 .. nc {
-				d := manhattan_distance(vectors[i], centroids[c])
-				if d < bd { bd = d
-				bc = c }
+	mut rng := rand.new_default()
+
+	// 1. Inicialização de centroides
+	kpp_count := if 100 < nc { 100 } else { nc }
+	mut sample_size := n / 20 // 5%
+	if sample_size < 50000 { sample_size = 50000 }
+	if sample_size > n { sample_size = n }
+
+	mut centroids := init_centroids(vectors, n, nc, kpp_count, sample_size, mut rng)!
+
+	// 2. Mini-batch K-means (25 iterações, 20% do dataset cada)
+	mut batch_size := n / 5 // 20%
+	if batch_size < nc * 10 { batch_size = nc * 10 }
+	if batch_size > n { batch_size = n }
+
+	mut cluster_assign := []int{len: n, init: 0}
+
+	for _ in 0 .. 25 {
+		// Pick random batch
+		mut batch := []int{len: batch_size}
+		for i in 0 .. batch_size { batch[i] = rng.int_in_range(0, n)! }
+
+		// Assign batch vectors to nearest centroid
+		for idx in batch {
+			mut best_c := 0
+			mut best_d := manhattan_distance(vectors[idx], centroids[0])
+			for c in 1 .. nc {
+				d := manhattan_distance(vectors[idx], centroids[c])
+				if d < best_d { best_d = d; best_c = c }
 			}
-			assigns[i] = bc
+			cluster_assign[idx] = best_c
 		}
-		mut sums := [][]i32{len: nc, init: []i32{len: 14, init: 0}}
-		mut cnts := []int{len: nc, init: 0}
-		for i in 0 .. n {
-			c := assigns[i]
-			cnts[c]++
-			for d in 0 .. 14 { sums[c][d] += i32(vectors[i][d]) }
+
+		// Recompute centroids via float64 averages, then re-quantize
+		mut accums_sum := [][14]f64{len: nc, init: [14]f64{}}
+		mut accums_cnt := []int{len: nc, init: 0}
+		for idx in batch {
+			c := cluster_assign[idx]
+			accums_cnt[c]++
+			for d in 0 .. 14 { accums_sum[c][d] += f64(vectors[idx][d]) }
 		}
-		mut newc := []Vector14{len: nc}
 		for c in 0 .. nc {
-			if cnts[c] > 0 {
-				mut v := Vector14{}
-				for d in 0 .. 14 { v[d] = i8(sums[c][d] / cnts[c]) }
-				newc[c] = v
-			} else { newc[c] = centroids[c] }
+			if accums_cnt[c] > 0 {
+				for d in 0 .. 14 {
+					avg := accums_sum[c][d] / f64(accums_cnt[c])
+					centroids[c][d] = quantize(avg / 127.0)
+				}
+			}
 		}
-		centroids = newc.clone()
 	}
-	mut cv := [][]Vector14{len: nc}
-	mut cl := [][]u8{len: nc}
+
+	// 3. Assign final: todos os vetores ao centroide mais próximo
 	for i in 0 .. n {
-		mut bd := i32(i32(2147483647))
-		mut bc := 0
-		for c in 0 .. nc {
+		mut best_c := 0
+		mut best_d := manhattan_distance(vectors[i], centroids[0])
+		for c in 1 .. nc {
 			d := manhattan_distance(vectors[i], centroids[c])
-			if d < bd { bd = d
-			bc = c }
+			if d < best_d { best_d = d; best_c = c }
 		}
-		cv[bc] << vectors[i]
-		cl[bc] << labels[i]
+		cluster_assign[i] = best_c
 	}
-	mut fv := []Vector14{cap: n}
-	mut fl := []u8{cap: n}
+
+	// 4. Contar vetores por cluster para calcular offsets
+	mut counts := []int{len: nc, init: 0}
+	for i in 0 .. n { counts[cluster_assign[i]]++ }
 	mut off := []int{len: nc + 1}
-	for c in 0 .. nc {
-		off[c] = fv.len
-		fv << cv[c]
-		fl << cl[c]
+	mut total := 0
+	for c in 0 .. nc { off[c] = total; total += counts[c] }
+	off[nc] = total
+
+	// 5. Reordenar vetores por cluster
+	mut fv := []Vector14{len: n}
+	mut fl := []u8{len: n}
+	mut cursor := off.clone()
+	for i in 0 .. n {
+		c := cluster_assign[i]
+		pos := cursor[c]
+		fv[pos] = vectors[i]
+		fl[pos] = labels[i]
+		cursor[c]++
 	}
-	off[nc] = fv.len
+
 	return &IVFIndex{vectors: fv, labels: fl, centroids: centroids, offsets: off, n_clusters: nc}
 }
 
-fn kmeans_pp(vectors []Vector14, k int) ![]Vector14 {
-	mut rng := rand.new_default()
-	n := vectors.len
-	mut centroids := []Vector14{cap: k}
-	centroids << vectors[rng.int_in_range(0, n)!]
-	for _ in 1 .. k {
-		mut dists := []f64{len: n}
-		mut td := f64(0)
-		for i in 0 .. n {
-			mut md := i32(i32(2147483647))
-			for c in centroids { d := manhattan_distance(vectors[i], c)
-			if d < md { md = d } }
-			dd := f64(md) + 1.0
-			dists[i] = dd
-			td += dd
+// init_centroids inicializa centroides com K-means++ nos primeiros kpp_count
+// usando uma amostra, e o restante via amostragem uniforme espaçada.
+fn init_centroids(vectors []Vector14, n int, nc int, kpp_count int, sample_size int, mut rng rand.PRNG) ![]Vector14 {
+	mut centroids := []Vector14{cap: nc}
+
+	// Amostra aleatória
+	mut sample := []int{len: sample_size}
+	for i in 0 .. sample_size { sample[i] = rng.int_in_range(0, n)! }
+
+	// Primeiro centroide: aleatório da amostra
+	centroids << vectors[sample[rng.int_in_range(0, sample_size)!]]
+
+	// K-means++ para os próximos kpp_count-1 centroides (na amostra)
+	for c in 1 .. kpp_count {
+		mut min_dists := []f64{len: sample_size}
+		mut total_weight := f64(0)
+		for i in 0 .. sample_size {
+			mut best_d := i32(i32(2147483647))
+			for j in 0 .. c {
+				d := manhattan_distance(vectors[sample[i]], centroids[j])
+				if d < best_d { best_d = d }
+			}
+			w := f64(best_d) * f64(best_d) // D² weighting
+			min_dists[i] = w
+			total_weight += w
 		}
-		t := rng.f64_in_range(0.0, td)!
+		threshold := rng.f64_in_range(0.0, total_weight)!
 		mut cum := f64(0)
-		mut ch := 0
-		for i in 0 .. n { cum += dists[i]
-		if cum >= t { ch = i
-		break } }
-		centroids << vectors[ch]
+		mut selected := sample[0]
+		for i in 0 .. sample_size {
+			cum += min_dists[i]
+			if cum >= threshold { selected = sample[i]; break }
+		}
+		centroids << vectors[selected]
 	}
+
+	// Centroides restantes: amostragem uniforme espaçada
+	for c := kpp_count; c < nc; c++ {
+		mut idx := c * n / nc
+		if idx >= n { idx = n - 1 }
+		centroids << vectors[idx]
+	}
+
 	return centroids
 }
 
@@ -175,6 +230,10 @@ pub fn (idx &IVFIndex) save(path string) ! {
 pub fn load_ivf(path string) !&IVFIndex {
 	data := os.read_bytes(path)!
 	mut pos := 0
+	// Detecta magic header "IVF\x01" (formato Go) vs formato V puro
+	if data.len >= 4 && data[0] == `I` && data[1] == `V` && data[2] == `F` && data[3] == 1 {
+		pos = 4 // pula magic
+	}
 	nv := int(binary.little_endian_u32(data[pos..pos + 4]))
 	pos += 4
 	nc := int(binary.little_endian_u32(data[pos..pos + 4]))
