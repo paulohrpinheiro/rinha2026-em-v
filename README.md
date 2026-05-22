@@ -21,12 +21,12 @@ todas as decisões que levaram ao platô de score `+1076` na versão Go:
 - IVF com 1.000 clusters, nprobe=2, K=5, threshold=0.6
 - Distância Manhattan sobre vetores int8 (14 bytes/vetor)
 - Parsing JSON manual byte-a-byte (zero alocações, zero reflection)
-- Índice pré-construído no Docker build (startup < 1s)
+- Índice pré-construído commitado no repositório (startup < 1s)
 - Proxy reverso que encaminha JSON bruto (sem parsing), APIs processam direto
 - Comunicação nginx↔API via Unix sockets
 - Semáforo não-bloqueante com capacidade 1024
 - Respostas pré-alocadas (6 respostas possíveis)
-- Binário da API stripped em scratch (multi-stage Docker build)
+- Binário da API estático em scratch (multi-stage Docker, `-cflags '-static'`)
 - Proxy reverso via **nginx:alpine** (~10 MB, zero código)
 
 ---
@@ -87,7 +87,7 @@ resources/           # Dataset + índice pré-construído
   references.json.gz # 3M vetores rotulados (apenas para build)
   mcc_risk.json      # Risco por MCC
   normalization.json # Constantes de normalização
-  index.bin          # Índice IVF pré-construído (gerado no docker build)
+  index.bin          # Índice IVF pré-construído (commitado; gerado com ferramenta Go)
 Dockerfile.api       # Multi-stage: vlang → scratch
 docker-compose.yml   # Orquestração local (com build)
 v.mod                # Módulo V (zero dependências externas)
@@ -111,13 +111,17 @@ Baixe do [repositório oficial da Rinha](https://github.com/zanfranceschi/rinha-
 - `mcc_risk.json`
 - `normalization.json`
 
+> **Nota**: O `index.bin` (43 MB) já está commitado no repositório e **não**
+> precisa ser baixado. Ele é gerado com a ferramenta Go quando o dataset de
+> referência mudar (ver [ADR-V06](docs/ARQUITETURA.md#adr-v06-docker-multi-stage-com-scratch--indexbin-commitado)).
+
 ---
 
 ## Comandos Make
 
 | Comando | Descrição |
 |---------|-----------|
-| `make build` | Compila binário stripped da API em bin/ |
+| `make build` | Compila binário estático da API em bin/ |
 | `make test` | Roda todos os testes |
 | `make bench` | Roda benchmarks nativos |
 | `make stress` | Teste de stress realista (5 min, 180 req/s) |
@@ -259,8 +263,8 @@ contadores internos e facilitar diagnóstico.
 | Aspecto | Go | V | Impacto |
 |---------|:--:|:--:|:-------:|
 | Compilação nativa | ✅ | ✅ | Sem runtime, binário statically linked |
-| Tamanho do binário | ~5 MB (stripped) | Esperado ~1-3 MB | Menor ainda |
-| GC | Sim (GOGC=off) | Opcional (autofree) | Pode eliminar GC overhead |
+| Tamanho do binário | ~5 MB (stripped) | ~400 KB (estático) | Menor ainda |
+| GC | Sim (GOGC=off) | Opcional (autofree removido — causa segfault) | Ver ADR-V17 |
 | Arrays fixos | [14]int8 | [14]i8 | Sintaxe similar |
 | Standard library HTTP | net/http | net.http ou x.vweb | Ambos suportam |
 | JSON parsing | encoding/json | json module | Similar |
@@ -273,7 +277,7 @@ contadores internos e facilitar diagnóstico.
 ### Vantagens potenciais de V
 
 1. **Binário menor**: V compila direto para C/assembly, sem runtime Go.
-2. **Sem GC obrigatório**: `-autofree` ou `-gc none` podem eliminar pausas de GC.
+2. **Sem GC obrigatório**: `-gc none` pode eliminar pausas de GC (`-autofree` removido — ver ADR-V17).
 3. **Compilação rápida**: V compila ~100k linhas/s.
 4. **Sintaxe limpa**: Similar a Go, mas com menos verbosidade.
 5. **C interop nativo**: Se precisar otimizar trechos críticos em C.

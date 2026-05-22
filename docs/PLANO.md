@@ -143,7 +143,7 @@ IVF funcionar, migrar para KD-tree com partições é a evolução natural para
 eliminar os ~3% de erro de recall.
 
 **Nota sobre performance**: Em V, o compilador pode auto-vetorizar o loop
-desenrolado de Manhattan. Testar com `v -prod -autofree` para máxima otimização.
+desenrolado de Manhattan. Compilar com `v -prod -skip-unused -cflags '-static'`.
 
 ---
 
@@ -226,18 +226,26 @@ usar o módulo `json` em modo manual (similar a `Decoder.Token()`).
 
 ### 5.2 K-means para clustering
 
-Implementação do K-means++ para inicialização + Lloyd iterations:
-- `n_clusters=1000`, `n_iter=20`
-- Inicialização com `math.rand` (V tem `rand` module)
+Implementação com **mini-batch K-means** (portado da versão Go v44):
+- Inicialização: K-means++ nos primeiros 100 centroides sobre amostra de 5% (~150K vetores)
+- Centroides restantes via amostragem uniforme espaçada
+- Refinamento: 25 iterações de mini-batch com 20% do dataset cada (~600K vetores/iteração)
+- Assign final no dataset completo com reordenação por cluster
+- `n_clusters=1000`
+
+> **Por que mini-batch?** O K-means++ original sobre o dataset completo (3M vetores)
+> tinha complexidade O(n·k²) ≈ 1.5 trilhão de distâncias Manhattan (~6 horas).
+> O mini-batch reduz para ~5 minutos.
 
 ### 5.3 Serialização binária (`index.bin`)
 
-Formato binário compatível com a versão Go:
-- Header: n_vectors (4 bytes), n_clusters (4 bytes)
-- Vectors: 14 bytes × n_vectors
-- Labels: n_vectors bytes
-- Centroids: 14 bytes × n_clusters
-- Offsets: 4 bytes × (n_clusters + 1)
+Formato binário compatível com a versão Go (ver ADR-V15):
+- Magic header (formato Go): `IVF\x01` (4 bytes) — detectado automaticamente
+- Header: n_vectors (4 bytes LE), n_clusters (4 bytes LE)
+- Vectors: 14 bytes × n_vectors (int8)
+- Labels: n_vectors bytes (uint8)
+- Centroids: 14 bytes × n_clusters (int8)
+- Offsets: 4 bytes × (n_clusters + 1) (int32 LE)
 
 ```v
 fn ivf_index.save(path string) ! {
@@ -318,13 +326,16 @@ Multi-stage build:
 
 ```dockerfile
 FROM vlang/vlang:alpine AS builder
+RUN apk add --no-cache ca-certificates
 WORKDIR /src
-COPY . .
-RUN v -prod -autofree -o /api cmd/api/main.v
+COPY v.mod .
+COPY internal/ ./internal/
+COPY cmd/ ./cmd/
 COPY resources/ /resources/
-RUN RESOURCES_DIR=/resources /api -build-index /resources/index.bin
+RUN v -prod -skip-unused -cflags '-static' -o /api cmd/api/main.v
 
 FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /api /api
 COPY --from=builder /resources/ /resources/
 EXPOSE 8080
@@ -403,11 +414,11 @@ networks:
 Flags V para máxima performance:
 
 ```makefile
-VFLAGS = -prod -autofree -skip-unused -cflags '-O3 -march=native -mtune=native'
+VFLAGS = -prod -skip-unused -cflags '-static'
 # -prod: otimizações máximas
-# -autofree: libera memória automaticamente (sem GC)
 # -skip-unused: remove código não usado
-# -cflags: flags para o backend C
+# -cflags '-static': binário statically linked (scratch)
+# NOTA: -autofree removido — causa segfault com map[string]f64 (ver ADR-V17)
 ```
 
 ---

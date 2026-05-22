@@ -19,11 +19,20 @@ dados ausentes), ocupando 14 bytes por vetor → 42 MB para os 3M vetores.
 
 ## ADR-V02: IVF (Inverted File Index) com 1.000 clusters
 
-**Decisão**: Mesma do ADR-02 Go. IVF com K-means++ (n_clusters=1000, n_iter=20).
-Busca com nprobe=2, maxScanPerCluster=5000, K=5, threshold=0.6.
+**Decisão**: Mesma do ADR-02 Go. IVF com **mini-batch K-means** (portado da
+estratégia Go v44). Inicialização: K-means++ nos primeiros 100 centroides sobre
+amostra de 5% (~150K vetores); centroides restantes via amostragem uniforme
+espaçada. Refinamento: 25 iterações de mini-batch com 20% do dataset cada
+(~600K vetores/iteração). Assign final no dataset completo com reordenação por
+cluster. Busca: nprobe=2, maxScanPerCluster=5000, K=5, threshold=0.6.
+
+**Motivação**: O K-means++ original sobre o dataset completo (3M vetores, 1000
+clusters) tinha complexidade O(n·k²) ≈ 1.5 trilhão de distâncias Manhattan,
+levando ~6 horas em single core. O mini-batch reduz para ~5 minutos.
 
 **Em V 0.5.1**: Struct `IVFIndex` com slices `[]Vector14`, `[]u8`, `[]int` —
-similares ao Go. Sem overhead de GC com `-autofree`.
+similares ao Go. Função `init_centroids` para inicialização híbrida
+(K-means++ parcial + amostragem uniforme).
 
 ---
 
@@ -86,27 +95,44 @@ server {
 
 ---
 
-## ADR-V05: Binários stripped com -prod
+## ADR-V05: Compilação estática com -prod e -cflags '-static'
 
-**Decisão**: Compilar com `v -prod -autofree -skip-unused`. Equivalente ao
-`-ldflags="-s -w"` do Go.
+**Decisão**: Compilar com `v -prod -skip-unused -cflags '-static'`.
+Equivalente ao `-ldflags="-s -w"` do Go, mas gerando binário statically linked
+contra musl (imagem base Alpine) para compatibilidade com scratch.
 
-**Consequências**: Binário esperado de ~1-3 MB, significativamente menor que
-os ~5 MB do Go.
+**Nota**: `-autofree` foi removido — causava segfault com `map[string]f64`
+alocado na stack e retornado por valor em `load_config()`. O autofree liberava
+o mapa prematuramente.
+
+**Consequências**: Binário estático de ~400 KB, compatível com scratch sem
+dependência de libc externa.
 
 ---
 
-## ADR-V06: Docker multi-stage com scratch + índice pré-construído
+## ADR-V06: Docker multi-stage com scratch + index.bin commitado
 
-**Decisão**: Mesma do ADR-06 Go, adaptando a imagem base:
-1. Stage builder: `vlang/vlang:alpine` (imagem oficial)
+**Decisão**: Mesma do ADR-06 Go, com duas diferenças:
+1. Stage builder: `vlang/vlang:alpine` (imagem oficial) com `-cflags '-static'`
 2. Stage runtime: `scratch`
+3. **Index.bin é commitado no repositório** (43 MB), não gerado durante o build
 
-O índice IVF é gerado durante o build com `RUN /api -build-index`.
+**Motivação**: O parser JSON byte-a-byte em V 0.5.1 levava ~33 minutos para
+carregar 3M de vetores (o parser Go leva 13 segundos). Gerar o índice durante
+o Docker build era inviável. O index.bin é gerado uma vez com a ferramenta Go
+e versionado.
 
-**Nota**: V 0.5.1 compila para binários statically linked (backend C),
-compatíveis com scratch. Diferente de Go, não precisa de `CGO_ENABLED=0` —
-V pode usar C interop se necessário.
+**Procedimento para rebuild do índice** (quando o dataset mudar):
+```bash
+cd ../rinha-de-backend-2026
+go build -o bin/api ./cmd/api
+RESOURCES_DIR=./resources REFERENCES_PATH=./resources/references.json.gz \
+  ./bin/api -build-index ./resources/index.bin
+cp resources/index.bin ../rinha2026-em-v/resources/
+```
+
+**Nota**: O `load_ivf()` do V detecta e suporta tanto o formato Go (magic
+header `IVF\x01`) quanto o formato V puro, mantendo compatibilidade futura.
 
 ---
 
@@ -118,14 +144,21 @@ V pode usar C interop se necessário.
 
 ---
 
-## ADR-V08: Carregamento streaming
+## ADR-V08: Carregamento streaming (parser manual + fallback Go)
 
-**Decisão**: Mesma do ADR-13 Go. Processar `references.json.gz` em modo
-streaming durante o Docker build, quantizando cada vetor imediatamente.
+**Decisão**: Mesma do ADR-13 Go. Processar `references.json.gz` com parsing
+JSON manual byte-a-byte, quantizando cada vetor imediatamente.
 
-**Em V 0.5.1**: `compress.gzip` + parsing JSON token a token. V não tem um
-`json.Decoder.Token()` tão flexível quanto Go — pode ser necessário
-implementar tokenização manual do JSON.
+**Em V 0.5.1**: Implementado parser manual (`loader.v`, `parser.v`) similar
+ao Go — `skip_ws`, `parse_float`, `skip_value`, campos identificados por
+tamanho da chave. Funcional mas **~150× mais lento** que o `encoding/json`
+do Go (33+ minutos vs 13 segundos para 3M vetores).
+
+**Status**: O parser V é usado apenas para o hot path (requisições de
+fraud-score, payloads de ~1 KB). Para o carregamento do dataset de
+referência (3M vetores), o `index.bin` é pré-construído com a ferramenta
+Go e commitado (ver ADR-V06). Otimização do parser V é trabalho futuro
+(benchmark em `cmd/api/bench_parse.v`).
 
 ---
 
@@ -201,23 +234,38 @@ sobre as strings de chave conhecidas.
 
 ---
 
-## ADR-V15: K=5, threshold=0.6, nprobe=2
+## ADR-V15: Formato binário compatível com Go (magic header)
+
+**Decisão**: O `index.bin` é gerado pela ferramenta Go, que usa magic header
+`IVF\x01` (4 bytes) antes dos campos de metadata. O `load_ivf()` do V detecta
+automaticamente o formato:
+- Se os primeiros 4 bytes forem `IVF\x01` → formato Go (pula magic)
+- Caso contrário → formato V puro (8 bytes: nVectors + nCentroids)
+
+Isso permite rebuild do índice com qualquer uma das ferramentas, sem
+lock-in. Ver implementação em `internal/ivf.v:load_ivf()`.
+
+---
+
+## ADR-V16: K=5, threshold=0.6, nprobe=2
 
 **Decisão**: Configuração de platô confirmada (ADR-42, ADR-81 Go). Uso de
 respostas pré-alocadas (6 possíveis) para zero alocações de serialização.
 
 ---
 
-## ADR-V16: GC e gerenciamento de memória
+## ADR-V17: GC e gerenciamento de memória
 
 **Contexto**: Go usa `GOGC=off` + `GOMEMLIMIT=60MiB`. V 0.5.1 tem opções
 diferentes.
 
-**Decisão**: Usar `-autofree` (libera memória automaticamente no escopo)
-combinado com `-skip-unused`. V não tem um equivalente direto ao `GOMEMLIMIT`,
+**Decisão**: Compilar com `-skip-unused` (elimina código morto) mas **sem
+`-autofree`**. O `-autofree` causava segfault com `map[string]f64` alocado
+na stack — o autofree liberava o mapa prematuramente quando retornado por
+valor de `load_config()`. V não tem um equivalente direto ao `GOMEMLIMIT`,
 então o controle de memória depende de:
 1. Pré-alocação de slices (`[]Vector14{len: 3_000_000}`)
-2. `-autofree` para liberar memória de escopos finalizados
+2. Index pré-carregado no startup (~43 MB em memória)
 3. Monitoramento via `/debug/vars` (implementado manualmente)
 
 **Risco**: Sem um mecanismo de soft memory limit, um pico de alocação pode
@@ -226,7 +274,7 @@ o startup e evitar alocações no hot path.
 
 ---
 
-## ADR-V17: Timeouts HTTP
+## ADR-V18: Timeouts HTTP
 
 **Decisão**: Mesmos valores do ADR-15/ADR-37 Go:
 - API Server: ReadTimeout=200ms, WriteTimeout=200ms, IdleTimeout=200ms
@@ -239,9 +287,10 @@ o startup e evitar alocações no hot path.
 
 | Risco | Probabilidade | Impacto | Mitigação |
 |-------|:------------:|:-------:|-----------|
-| `net.http` em V 0.5.1 instável sob carga | Média | Alto | V 0.5.1 é mais maduro que 0.4.x; testar com k6 |
-| Parsing JSON token a token imaturo | Média | Médio | Tokenização manual se necessário |
-| `-autofree` causar double-free | Baixa | Alto | Testar com `-gc boehm` como fallback |
+| `net` em V 0.5.1 instável sob carga | Média | Alto | V 0.5.1 é mais maduro que 0.4.x; testar com k6 |
+| Parser JSON manual lento (150× Go) | **Confirmado** | Médio | Index.bin pré-construído com Go; parser V só no hot path |
+| `-autofree` + stack ref = segfault | **Confirmado** | Alto | **Removido** `-autofree`; compilação com `-skip-unused` apenas |
 | Compilador V crash em edge cases | Baixa | Médio | Isolar código problemático em módulo C |
-| Docker scratch com V compilado via C | Muito baixa | Baixo | V compila estaticamente, sem libc necessária |
+| K-means++ dataset completo (~6h) | **Confirmado** | Alto | **Corrigido**: mini-batch K-means (~5 min) |
 | nginx ser single-point-of-failure | Baixa | Baixo | nginx é extremamente estável; não é gargalo com 0.19 CPU |
+| Binário não-estático incompatível com scratch | **Confirmado** | Alto | **Corrigido**: `-cflags '-static'` (Alpine/musl) |
