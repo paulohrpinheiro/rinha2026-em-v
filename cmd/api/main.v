@@ -1,0 +1,97 @@
+module main
+
+import internal
+import net
+import os
+import json
+
+fn main() {
+	args := os.args
+	if args.len >= 3 && args[1] == '-build-index' {
+		build_index(args[2])!
+		return
+	}
+
+	mut dir := os.getenv('RESOURCES_DIR')
+	if dir == '' { dir = './resources' }
+	config := load_config(dir)!
+	idx := load_index(dir)!
+
+	dc := &internal.DebugCounters{}
+	sem := internal.new_semaphore(1024)
+	mut handler := internal.new_handler(idx, config, dc, sem)
+
+	for _ in 0 .. 48 {
+		handler.handle_fraud_score(warmup_payload.bytes())
+	}
+
+	mut port := os.getenv('PORT')
+	if port == '' { port = '8080' }
+	mut listener := net.listen_tcp(.ip6, '[::]:${port}') or {
+		net.listen_tcp(.ip, '0.0.0.0:${port}')!
+	}
+	println('API ready on :${port}')
+
+	for {
+		mut conn := listener.accept()!
+		spawn handle_conn(mut conn, mut handler, dc)
+	}
+}
+
+fn handle_conn(mut conn net.TcpConn, mut handler internal.Handler, dc &internal.DebugCounters) {
+	defer { conn.close() or {} }
+	mut buf := []u8{len: 4096}
+	n := conn.read(mut buf) or { return }
+	body := buf[..n]
+
+	if body.bytestr().starts_with('GET /ready') {
+		conn.write('HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{"status":"ok"}'.bytes()) or {}
+	} else if body.bytestr().starts_with('GET /debug/vars') {
+		snap := dc.snapshot()
+		resp := 'HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n${snap}'
+		conn.write(resp.bytes()) or {}
+	} else if body.bytestr().starts_with('POST /fraud-score') {
+		header_end := body.bytestr().index('\r\n\r\n') or { body.len - 1 }
+		json_body := body[header_end + 4..]
+		response := handler.handle_fraud_score(json_body)
+		if response.len == 0 {
+			conn.write('HTTP/1.0 503 Service Unavailable\r\nConnection: close\r\n\r\n'.bytes()) or {}
+		} else {
+			resp := 'HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${response.len}\r\nConnection: close\r\n\r\n${response.bytestr()}'
+			conn.write(resp.bytes()) or {}
+		}
+	}
+}
+
+fn build_index(output_path string) ! {
+	mut refs_path := os.getenv('REFERENCES_PATH')
+	if refs_path == '' { refs_path = './resources/references.json.gz' }
+	println('Loading references from ${refs_path}...')
+	vectors, labels := internal.load_references(refs_path)!
+	println('Loaded ${vectors.len} vectors. Building IVF index (1000 clusters, 20 iters)...')
+	idx := internal.build_ivf(vectors, labels, 1000, 20)!
+	println('Saving index to ${output_path}...')
+	idx.save(output_path)!
+	println('Done.')
+}
+
+fn load_config(dir string) !&internal.NormalizationConfig {
+	norm_data := os.read_bytes('${dir}/normalization.json')!
+	norm := json.decode(internal.NormalizationConfig, norm_data.bytestr())!
+	mcc_data := os.read_bytes('${dir}/mcc_risk.json')!
+	mcc := json.decode(map[string]f64, mcc_data.bytestr())!
+	return &internal.NormalizationConfig{
+		max_amount: norm.max_amount, max_installments: norm.max_installments,
+		amount_vs_avg_ratio: norm.amount_vs_avg_ratio, max_minutes: norm.max_minutes,
+		max_km: norm.max_km, max_tx_count_24h: norm.max_tx_count_24h,
+		max_merchant_avg_amount: norm.max_merchant_avg_amount, mcc_risk: mcc.clone(),
+	}
+}
+
+fn load_index(dir string) !&internal.IVFIndex {
+	path := '${dir}/index.bin'
+	if os.exists(path) { return internal.load_ivf(path) }
+	return error('index.bin not found at ${path}')
+}
+
+const warmup_payload = '{"id":"warmup","transaction":{"amount":384.88,"installments":3,"requested_at":"2026-03-11T20:23:35Z"},"customer":{"avg_amount":769.76,"tx_count_24h":3,"known_merchants":["MERC-009","MERC-001"]},"merchant":{"id":"MERC-001","mcc":"5912","avg_amount":298.95},"terminal":{"is_online":false,"card_present":true,"km_from_home":13.71},"last_transaction":{"timestamp":"2026-03-11T14:58:35Z","km_from_current":18.86}}'

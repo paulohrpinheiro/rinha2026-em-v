@@ -1,0 +1,22 @@
+# Stage 1: Build + gerar índice
+FROM thevlang/vlang:alpine AS builder
+RUN apk add --no-cache ca-certificates
+WORKDIR /src
+COPY v.mod .
+COPY internal/ ./internal/
+COPY cmd/ ./cmd/
+COPY resources/ /resources/
+
+# Compila a API
+RUN v -prod -autofree -skip-unused -o /api cmd/api/main.v
+
+# Gera o índice IVF pré-construído
+RUN RESOURCES_DIR=/resources REFERENCES_PATH=/resources/references.json.gz /api -build-index /resources/index.bin
+
+# Stage 2: Runtime
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /api /api
+COPY --from=builder /resources/ /resources/
+EXPOSE 8080
+ENTRYPOINT ["/api"]

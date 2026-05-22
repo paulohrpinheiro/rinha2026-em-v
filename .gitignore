@@ -1,0 +1,5 @@
+bin/
+*.bin
+profile.txt
+perf.data
+/tmp/
