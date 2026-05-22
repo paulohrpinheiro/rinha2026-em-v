@@ -18,7 +18,7 @@ services:
 
   api-1:
     hostname: api-1
-    image: paulohrpinheiro/rinha-api-v:v01
+    image: paulohrpinheiro/rinha-api-v:v02
     environment:
       - PORT=8080
       - RESOURCES_DIR=/resources
@@ -33,7 +33,7 @@ services:
 
   api-2:
     hostname: api-2
-    image: paulohrpinheiro/rinha-api-v:v01
+    image: paulohrpinheiro/rinha-api-v:v02
     environment:
       - PORT=8080
       - RESOURCES_DIR=/resources
