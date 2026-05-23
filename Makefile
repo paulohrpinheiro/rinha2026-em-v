@@ -34,6 +34,12 @@ docker-down:
 docker-logs:
 	docker compose logs -f
 
+proxy-build:
+	v -prod -skip-unused -o bin/vproxy cmd/vproxy/main.v
+
+proxy-docker-build:
+	docker build -t $(IMAGE):vproxy -f Dockerfile.vproxy .
+
 clean:
 	rm -rf bin/
 

@@ -1,0 +1,13 @@
+# Dockerfile.vproxy — Proxy TCP em V (multi-stage, binário estático em scratch).
+FROM thevlang/vlang:alpine AS builder
+RUN apk add --no-cache ca-certificates
+WORKDIR /src
+COPY v.mod .
+COPY cmd/vproxy/ ./cmd/vproxy/
+RUN v -prod -skip-unused -cflags '-static' -o /vproxy cmd/vproxy/main.v
+
+FROM scratch
+COPY --from=builder /vproxy /vproxy
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+EXPOSE 9999
+ENTRYPOINT ["/vproxy"]
