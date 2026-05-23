@@ -3,9 +3,6 @@ volumes:
 
 services:
   vproxy:
-    build:
-      context: .
-      dockerfile: Dockerfile.vproxy
     image: paulohrpinheiro/rinha-api-vproxy:v05
     ports:
       - "9999:9999"
