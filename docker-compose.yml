@@ -6,6 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.vproxy
+    image: paulohrpinheiro/rinha-api-vproxy:v05
     ports:
       - "9999:9999"
     volumes:
@@ -25,7 +26,7 @@ services:
 
   api-1:
     hostname: api-1
-    image: paulohrpinheiro/rinha-api-v:v04
+    image: paulohrpinheiro/rinha-api-v:v05
     environment:
       - SOCKET_PATH=/sockets/api-1.sock
       - RESOURCES_DIR=/resources
@@ -41,7 +42,7 @@ services:
 
   api-2:
     hostname: api-2
-    image: paulohrpinheiro/rinha-api-v:v04
+    image: paulohrpinheiro/rinha-api-v:v05
     environment:
       - SOCKET_PATH=/sockets/api-2.sock
       - RESOURCES_DIR=/resources

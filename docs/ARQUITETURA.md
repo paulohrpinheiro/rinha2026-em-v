@@ -283,6 +283,53 @@ o startup e evitar alocações no hot path.
 
 ---
 
+## ADR-V19: Versionamento de imagens Docker
+
+**Decisão**: Duas imagens Docker independentes no Docker Hub, ambas
+versionadas com o mesmo tag semântico (`v01`, `v02`, …).
+
+| Imagem | Repositório | Função |
+|--------|-------------|--------|
+| API | `paulohrpinheiro/rinha-api-v` | Servidor HTTP de detecção de fraude |
+| Proxy | `paulohrpinheiro/rinha-api-vproxy` | Proxy TCP (substitui nginx) |
+
+**Build unificado** — um comando constrói ambas:
+```bash
+make docker-build VERSION=v05
+```
+
+**Push unificado** — um comando envia ambas:
+```bash
+make docker-push VERSION=v05
+```
+
+**docker-compose.yml** referencia as imagens por tag (`image:` + `build:`),
+permitindo tanto `docker compose up` local com rebuild quanto pull do registry.
+
+---
+
+## ADR-V20: Proxy TCP em V (substituição do nginx)
+
+**Decisão**: Substituir `nginx:alpine` por um proxy TCP customizado em V,
+eliminando o overhead de HTTP parsing no proxy.
+
+**Motivação**: O nginx fazia parsing HTTP completo para cada requisição
+recebida. O proxy em V apenas copia bytes entre os sockets (client↔backend),
+eliminando uma camada de processamento. Além disso, a comunicação com as
+APIs é via Unix sockets nativos (sem TCP bridge), reduzindo latência.
+
+**Ganhos esperados**:
+- Proxy ~10 MB → ~6 MB (scratch vs nginx:alpine)
+- CPU do proxy 0.19 → 0.10 (libera 0.09 para as APIs)
+- APIs ganham 11% de CPU (0.405 → 0.45 cada)
+- Latência reduzida pela eliminação do parsing HTTP duplicado
+
+**Desvantagens**:
+- Proxy em V não faz HTTP health check próprio (delega às APIs)
+- Round-robin simples em vez de least_conn com health check do nginx
+
+---
+
 ## Riscos Específicos da Versão V
 
 | Risco | Probabilidade | Impacto | Mitigação |
