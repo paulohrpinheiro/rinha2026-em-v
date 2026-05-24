@@ -7,7 +7,6 @@
 BINARY_API   := bin/api
 VFLAGS       := -prod -skip-unused
 IMAGE_API    := paulohrpinheiro/rinha-api-v
-IMAGE_PROXY  := paulohrpinheiro/rinha-api-vproxy
 VERSION      ?= v1
 
 # ── Compilação local ──────────────────────────────────────────────────────
@@ -33,11 +32,9 @@ perf-stat: build
 
 docker-build:
 	docker build -t $(IMAGE_API):$(VERSION) -f Dockerfile.api .
-	docker build -t $(IMAGE_PROXY):$(VERSION) -f Dockerfile.vproxy .
 
 docker-push:
 	docker push $(IMAGE_API):$(VERSION)
-	docker push $(IMAGE_PROXY):$(VERSION)
 
 # ── Docker Compose ────────────────────────────────────────────────────────
 
