@@ -55,6 +55,8 @@ fn main() {
 	mut socket_path := os.getenv('SOCKET_PATH')
 	if socket_path == '' { socket_path = '/run/sock/api.sock' }
 	mut listener := unix.listen_stream(socket_path)!
+	// Permissão 0777 para nginx (usuário diferente no container) conectar
+	os.chmod(socket_path, int(0o777)) or {}
 	println('API ready on ${socket_path}')
 
 	for {
