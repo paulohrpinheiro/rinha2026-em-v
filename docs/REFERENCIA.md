@@ -4,35 +4,41 @@
 
 ---
 
-## Referência externa: 1º colocado
+## Referência externa: 1º colocado (atualizado)
 
 | Campo | Valor |
 |-------|-------|
-| Repositório | [daniloitagyba/rinha-2026-dotnet](https://github.com/daniloitagyba/rinha-2026-dotnet) |
-| Stack | .NET 10 Native AOT + C nativo (P/Invoke) |
-| Algoritmo | **KD-tree** exato particionado (256 partições) |
-| Distância | **Euclidiana** com AVX2 (int16, escala 10000) |
-| Load balancer | **C TCP fd handoff** (SCM_RIGHTS) |
-| Busca | Spatial bucketing (4096 buckets, coarse + fine) |
-| Early termination | Sim — interrompe quando os 5 vizinhos concordam |
+| Repositório | [dalvorsn/cpp-rinha-backend-2026](https://github.com/dalvorsn/cpp-rinha-backend-2026) |
+| Stack | **C++** nativo |
+| Algoritmo | **KD-tree** exato |
+| Distância | Manhattan |
+| Load balancer | **C++ TCP proxy** |
+| CPU proxy | 0.10 |
+| Memória proxy | 30 MB |
+| CPU cada API | 0.45 |
+| Memória cada API | 120 MB |
+| Memória total | **270 MB** (80 MB abaixo do limite) |
+| Score | **5.986** |
+| p99 | **1.03ms** |
+| FP | **0** |
+| FN | **0** |
 
-### Comparação arquitetural: Nós (Go/V) vs 1º colocado
+*Nota: a organização atualizou as regras — os valores esperados agora são os mesmos dos nossos testes (fraud=23959, legit=30141, edge=645).*
 
-| Aspecto | Go v44 / Plano V | 1º colocado (.NET + C) |
-|---------|:-----------------:|:----------------------:|
-| **Algoritmo** | IVF aproximado (1000 clusters) | KD-tree exato (256 partições) |
-| **Recall** | ~97% (nprobe=2) | 100% (exato) |
-| **Distância** | Manhattan L1 (int8) | Euclidiana AVX2 (int16) |
-| **Precisão** | int8 (0-127, ~0.4% erro) | int16 (escala 10000, ~0.01% erro) |
-| **Proxy/LB** | nginx HTTP reverso | C TCP fd handoff |
-| **Hot path** | V puro | C nativo + AVX2 |
-| **CPU proxy** | 0.19 | Mínimo (só aceita e passa fd) |
-| **Busca por query** | ~3.000-15.000 vetores | ~12.000 vetores (1/256) |
-| **Index size** | ~45 MB | Binário embedded |
-| **FP** | ~734 | **0** |
-| **FN** | ~412 | **0** |
-| **HTTP errors** | 67 | **0** |
-| **Score** | +1.076 | **+6.000** (máximo) |
+### Comparação arquitetural: V vs 1º colocado (C++)
+
+| Aspecto | V (v11) | 1º colocado (C++) |
+|---------|:-------:|:-----------------:|
+| **Algoritmo** | IVF aproximado (1000 clusters, nprobe=8) | KD-tree exato |
+| **Recall** | ~98% | 100% (exato) |
+| **Distância** | Manhattan L1 (int8) | Manhattan |
+| **Proxy/LB** | nginx stream (zero parsing HTTP) | C++ TCP proxy |
+| **Hot path** | V 0.5.1 | C++ nativo |
+| **Busca por query** | até 40.000 vetores (8×5000) | ~todos |
+| **FP** | 615 | **0** |
+| **FN** | 339 | **0** |
+| **Memória total** | 350 MB | **270 MB** |
+| **Score** | **3.331** | **5.986** 🏆 |
 
 ---
 
@@ -111,16 +117,16 @@ do IVF com int8 for insuficiente.
 
 | Parâmetro | Valor | ADR Go |
 |-----------|:-----:|:------:|
-| Proxy reverso | **nginx:alpine** (least_conn) | ADR-04 (substituído) |
+| Proxy reverso | **nginx:alpine** (stream mode, zero parsing HTTP) | ADR-V20 |
 | Proxy CPU | 0.19 | ADR-28 |
 | API CPU (cada) | 0.405 | ADR-09 |
 | Proxy RAM | 20 MB | ADR-09 |
 | API RAM (cada) | 165 MB | ADR-09 |
 | CPU total | 1.0 | — |
 | RAM total | 350 MB | — |
-| Rede | bridge | — |
+| Rede | bridge + volume compartilhado | — |
 | Comunicação interna | Unix sockets | ADR-17 |
-| Volume compartilhado | `/run/sock` | ADR-17 |
+| Volume compartilhado | `/sockets` | ADR-17 |
 
 ---
 
@@ -164,28 +170,28 @@ do IVF com int8 for insuficiente.
 
 ---
 
-## Resultados oficiais
+## Resultados oficiais (atualizado)
 
-| Métrica | Go v44 | 1º colocado |
-|---------|:------:|:-----------:|
-| HTTP errors | 67 | **0** |
-| TP | — | **24.037** |
-| TN | — | **30.022** |
-| FP | ~734 | **0** |
-| FN | ~412 | **0** |
-| Failure rate | 2.3% | **0%** |
-| p99 | 192ms | **0.96ms** |
-| p99 score | +709 | **+3.000** |
-| Detection score | +373 | **+3.000** |
-| **Score final** | **+1.076** | **+6.000** 🏆 |
+| Métrica | Go v44 | V v02 | V v07 | V v09 | V v10 | **C++ (1º)** |
+|---------|:------:|:-----:|:-----:|:-----:|:-----:|:------------:|
+| HTTP errors | 67 | 1 | 0 | 0 | 0 | **0** |
+| TP | — | 23.606 | 23.606 | 23.594 | 23.603 | **23.942** |
+| TN | — | 29.483 | 29.484 | 29.493 | 29.502 | **30.117** |
+| FP | ~734 | 633 | 633 | 624 | 615 | **0** |
+| FN | ~412 | 336 | 336 | 348 | 339 | **0** |
+| Failure rate | 2,3% | 1,79% | 1,79% | 1,8% | 1,76% | **0%** |
+| p99 | 192ms | 10,58ms | 18,92ms | **1,47ms** | 1,68ms | **1,03ms** |
+| p99 score | +709 | +1.976 | +1.723 | +2.832 | +2.775 | **+2.986** |
+| Detection score | +373 | +551 | +553 | +544 | +556 | **+3.000** |
+| **Score final** | **+1.076** | **+2.527** | **+2.276** | **+3.376** | **+3.331** | **+5.986** 🏆 |
 
-### Alocação real de recursos (1º colocado)
+### Alocação de recursos (comparativo)
 
-| Serviço | CPU | Memória |
-|---------|:---:|:-------:|
-| lb (fd handoff) | 0.12 | 32 MB |
-| api-1 | 0.44 | 156 MB |
-| api-2 | 0.44 | 156 MB |
-| **Total** | **1.00** | **344 MB** |
+| Serviço | V (v10) | C++ (1º) |
+|---------|:-------:|:---------:|
+| Proxy/LB | nginx: 0.19 CPU / 20 MB | C++ TCP: 0.10 CPU / 30 MB |
+| api-1 | V: 0.405 CPU / 165 MB | C++: 0.45 CPU / 120 MB |
+| api-2 | V: 0.405 CPU / 165 MB | C++: 0.45 CPU / 120 MB |
+| **Total** | **1.00 CPU / 350 MB** | **1.00 CPU / 270 MB** |
 
-Fonte: [`benchs/benchs/resultBest.json`](../benchs/benchs/resultBest.json)
+Fonte: [`benchs/resultBest.json`](../benchs/resultBest.json), [`benchs/result10.json`](../benchs/result10.json)
