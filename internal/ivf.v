@@ -26,13 +26,15 @@ pub fn new_ivf(vv []Vector14, ll []u8, cc []Vector14, oo []int) &IVFIndex {
 
 pub fn (idx &IVFIndex) search(query &Vector14) (int, int) {
 	if idx.n_clusters == 0 { return 0, 0 }
-	mut nearest := [2]CentroidDist{}
+	mut nearest := [4]CentroidDist{}
 	nearest[0] = CentroidDist{dist: i32(2147483647)}
 	nearest[1] = CentroidDist{dist: i32(2147483647)}
+	nearest[2] = CentroidDist{dist: i32(2147483647)}
+	nearest[3] = CentroidDist{dist: i32(2147483647)}
 	for c in 0 .. idx.n_clusters {
 		d := manhattan_distance(query, idx.centroids[c])
-		if d < nearest[1].dist {
-			mut pos := 1
+		if d < nearest[3].dist {
+			mut pos := 3
 			for pos > 0 && d < nearest[pos - 1].dist {
 				nearest[pos] = nearest[pos - 1]
 				pos--
@@ -60,6 +62,10 @@ pub fn (idx &IVFIndex) search(query &Vector14) (int, int) {
 				top_k[pos] = Neighbor{dist: dist, label: idx.labels[i]}
 			}
 		}
+		// Early termination: se K=5 vizinhos concordam, interrompe aqui
+		mut fraud_count := 0
+		for n in top_k { if n.label == 1 { fraud_count++ } }
+		if fraud_count == 0 || fraud_count == 5 { return fraud_count, idx.vectors.len }
 	}
 	mut fraud_count := 0
 	for n in top_k { if n.label == 1 { fraud_count++ } }
