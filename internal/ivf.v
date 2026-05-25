@@ -48,7 +48,7 @@ pub fn (idx &IVFIndex) search(query &Vector14) (int, int) {
 		start := idx.offsets[nc.id]
 		end := idx.offsets[nc.id + 1]
 		if start >= end { continue }
-		mut stop := start + 5000
+		mut stop := start + 10000
 		if stop > end { stop = end }
 		for i in start .. stop {
 			dist := manhattan_distance(query, idx.vectors[i])
@@ -73,8 +73,11 @@ pub fn (idx &IVFIndex) search(query &Vector14) (int, int) {
 
 struct CentroidDist { id int
 dist i32 }
-struct Neighbor { dist i32
-label u8 }
+pub struct Neighbor {
+pub:
+	dist  i32
+	label u8
+}
 
 // build_ivf constrói um IVF index usando mini-batch K-means.
 // Estratégia (portada da versão Go v44):
