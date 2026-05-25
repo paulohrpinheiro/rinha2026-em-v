@@ -49,7 +49,7 @@ pub fn (idx &IVFIndex) search(query &Vector14) (int, int) {
 		start := idx.offsets[nc.id]
 		end := idx.offsets[nc.id + 1]
 		if start >= end { continue }
-		mut stop := start + 5000
+		mut stop := start + 2500
 		if stop > end { stop = end }
 		for i in start .. stop {
 			dist := manhattan_distance(query, idx.vectors[i])
