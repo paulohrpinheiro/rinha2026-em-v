@@ -22,7 +22,7 @@ services:
 
   api-1:
     hostname: api-1
-    image: paulohrpinheiro/rinha-api-v:v12
+    image: paulohrpinheiro/rinha-api-v:v13
     environment:
       - SOCKET_PATH=/sockets/api-1.sock
       - RESOURCES_DIR=/resources
@@ -38,7 +38,7 @@ services:
 
   api-2:
     hostname: api-2
-    image: paulohrpinheiro/rinha-api-v:v12
+    image: paulohrpinheiro/rinha-api-v:v13
     environment:
       - SOCKET_PATH=/sockets/api-2.sock
       - RESOURCES_DIR=/resources
