@@ -26,14 +26,14 @@ pub fn new_ivf(vv []Vector14, ll []u8, cc []Vector14, oo []int) &IVFIndex {
 
 pub fn (idx &IVFIndex) search(query &Vector14) (int, int) {
 	if idx.n_clusters == 0 { return 0, 0 }
-	mut nearest := [8]CentroidDist{}
-	for i in 0 .. 8 {
+	mut nearest := [4]CentroidDist{}
+	for i in 0 .. 4 {
 		nearest[i] = CentroidDist{dist: i32(2147483647)}
 	}
 	for c in 0 .. idx.n_clusters {
 		d := manhattan_distance(query, idx.centroids[c])
-		if d < nearest[7].dist {
-			mut pos := 7
+		if d < nearest[3].dist {
+			mut pos := 3
 			for pos > 0 && d < nearest[pos - 1].dist {
 				nearest[pos] = nearest[pos - 1]
 				pos--
